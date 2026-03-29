@@ -1,6 +1,6 @@
 {
   "name": "ripcord-resume-codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Recover bounded context from Codex sessions inside Claude Code and stop after asking whether to continue.",
   "author": {
     "name": "Nischit Ranganath",
