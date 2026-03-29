@@ -19,12 +19,16 @@ No full transcript dumps. No automatic continuation. Just the context you need t
 
 ## Quick Start
 
+After installing either integration, restart that app before using it. If you install both sides, restart both Claude Code and Codex once.
+
 ### Claude Code → Recovering Codex Context
 
 ```text
 /plugin marketplace add neeschit/ripcord
 /plugin install ripcord-resume-codex@ripcord
 ```
+
+Restart Claude Code after installing the plugin so `/resume-codex-session` is available.
 
 Then:
 
@@ -34,7 +38,19 @@ Then:
 
 ### Codex → Recovering Claude Context
 
-Install the skill from `skills/resume-claude-session` in the `neeschit/ripcord` repository using Codex's GitHub skill installation flow.
+Paste this into Codex:
+
+```text
+Install the skill from `skills/resume-claude-session` in the `neeschit/ripcord` repository using the GitHub skill installation flow. If the direct download method fails, retry with the git method.
+```
+
+Restart Codex after installing the skill so `resume-claude-session` is loaded.
+
+Then:
+
+```text
+Use the `resume-claude-session` skill to recover context from a Claude session for this workspace.
+```
 
 ## What Ripcord Won't Do
 
