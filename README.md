@@ -1,68 +1,58 @@
 # Ripcord
 
-Ripcord helps you recover bounded context when switching between Codex and Claude in the same workspace.
+**Hit a rate limit? Switch tools without losing your place.**
 
-It is a recovery tool, not a native session handoff. Ripcord finds relevant local session artifacts, extracts a compact recovery bundle, presents the important context, and stops before taking new action.
+You're deep in a coding session with Claude Code. Rate limit. You switch to Codex — but now you're starting from zero. All that context, the plan, the recent changes, the conversation — gone.
 
-## What Ripcord Does
+Ripcord pulls the parachute. It recovers bounded context from your previous session so you can pick up where you left off in a different tool.
 
-- Finds likely foreign sessions for the current workspace.
-- Extracts a bounded bundle instead of dumping full transcripts.
-- Recovers the initial prompt, recent user and assistant messages, recent tool use, and session metadata.
-- Stops after surfacing the recovered context so the user can decide whether to continue.
+
+## How It Works
+
+1. Detects sessions from the other tool in your current workspace.
+2. Extracts a compact recovery bundle — initial prompt, recent messages, tool use, and metadata.
+3. Surfaces the recovered context and lets you decide what to do next.
 
 <img width="1707" height="912" alt="claude surface" src="https://github.com/user-attachments/assets/4a329364-3c0b-4e55-8cd4-b1e3dc80b136" />
 
+No full transcript dumps. No automatic continuation. Just the context you need to keep moving.
 
-## What Ripcord Does Not Do
+## Quick Start
 
-- Restore provider-owned session state.
-- Resume tools or shell state natively.
-- Continue work automatically after recovery.
-- Treat Codex and Claude sessions as interchangeable.
-
-## Supported Surfaces
-
-### Claude Code: Recover Codex Context
-
-Ripcord ships a Claude plugin named `ripcord-resume-codex`.
-
-Install it from GitHub:
+### Claude Code → Recovering Codex Context
 
 ```text
 /plugin marketplace add neeschit/ripcord
 /plugin install ripcord-resume-codex@ripcord
 ```
 
-Reload plugins, then invoke the skill as:
+Then:
 
 ```text
 /resume-codex-session [session-id]
 ```
 
-### Codex: Recover Claude Context
+### Codex → Recovering Claude Context
 
-Ripcord also ships a Codex skill named `resume-claude-session`.
+Install the skill from `skills/resume-claude-session` in the `neeschit/ripcord` repository using Codex's GitHub skill installation flow.
 
-Install the skill from the GitHub path `skills/resume-claude-session` in the `neeschit/ripcord` repository using Codex's GitHub skill installation flow.
+## What Ripcord Won't Do
 
-## Recovery Model
+Ripcord is a recovery tool, not a session bridge. It won't:
 
-Ripcord is intentionally conservative:
+- Restore provider-owned session state
+- Resume shell or tool state
+- Continue work automatically
+- Pretend the two tools are interchangeable
 
-1. Discover likely sessions for the current workspace.
-2. Select the best match or ask the user to choose.
-3. Recover bounded context from the foreign transcript.
-4. Present the result and ask whether to continue.
-
-The recovered bundle is designed to be useful without pretending the original session has been restored.
+The recovered bundle is designed to be **useful**, not to fake continuity.
 
 ## Development
 
-Development workflow, testing, and local validation live in [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, testing, and local validation.
 
 Inspired by [ralPhD](https://github.com/angadhn/ralPhd)
 
 ## License
 
-Ripcord is licensed under the [MIT License](LICENSE).
+[MIT License](LICENSE)
