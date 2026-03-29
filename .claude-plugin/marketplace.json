@@ -1,0 +1,33 @@
+{
+  "name": "ripcord",
+  "owner": {
+    "name": "Nischit Ranganath",
+    "email": "nischit.burnz@gmail.com"
+  },
+  "metadata": {
+    "description": "Recovery-oriented Claude Code plugins for continuing work across Codex and Claude without native session restoration.",
+    "version": "0.1.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "ripcord-resume-codex",
+      "source": "./plugins/ripcord-resume-codex",
+      "description": "Recover bounded context from Codex sessions inside Claude Code and ask whether to continue.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Nischit Ranganath",
+        "email": "nischit.burnz@gmail.com"
+      },
+      "homepage": "https://github.com/neeschit/ripcord",
+      "repository": "https://github.com/neeschit/ripcord",
+      "license": "MIT",
+      "category": "Coding",
+      "tags": [
+        "codex",
+        "session-recovery",
+        "continuation"
+      ]
+    }
+  ]
+}

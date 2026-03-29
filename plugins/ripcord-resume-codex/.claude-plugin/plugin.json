@@ -1,0 +1,18 @@
+{
+  "name": "ripcord-resume-codex",
+  "version": "0.1.0",
+  "description": "Recover bounded context from Codex sessions inside Claude Code and stop after asking whether to continue.",
+  "author": {
+    "name": "Nischit Ranganath",
+    "email": "nischi.burnz@gmail.com"
+  },
+  "homepage": "https://github.com/neeschit/ripcord",
+  "repository": "https://github.com/neeschit/ripcord",
+  "license": "MIT",
+  "keywords": [
+    "ripcord",
+    "claude",
+    "codex",
+    "session-recovery"
+  ]
+}
