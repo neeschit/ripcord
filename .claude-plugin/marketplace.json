@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Recovery-oriented Claude Code plugins for continuing work across Codex and Claude without native session restoration.",
-    "version": "0.1.0",
+    "version": "'0.1.1'",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -14,7 +14,7 @@
       "name": "ripcord-resume-codex",
       "source": "./plugins/ripcord-resume-codex",
       "description": "Recover bounded context from Codex sessions inside Claude Code and ask whether to continue.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Nischit Ranganath",
         "email": "nischit.burnz@gmail.com"
