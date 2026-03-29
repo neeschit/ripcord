@@ -31,7 +31,11 @@ Install it from GitHub:
 /plugin install ripcord-resume-codex@ripcord
 ```
 
-Depending on Claude's plugin namespacing, the skill may appear as `resume-codex-session` or `/ripcord-resume-codex:resume-codex-session`.
+Reload plugins, then invoke the skill as:
+
+```text
+/resume-codex-session [session-id]
+```
 
 ### Codex: Recover Claude Context
 

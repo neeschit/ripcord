@@ -38,8 +38,8 @@ uv run python -m ripcord.cli --help
 Try discovery and recovery directly:
 
 ```bash
-uv run python -m ripcord.cli discover --source claude --workspace /absolute/path --json
-uv run python -m ripcord.cli recover --source codex --workspace /absolute/path --session-id <id> --json
+uv run python -m ripcord.cli discover --source claude --workspace /absolute/path
+uv run python -m ripcord.cli recover --source codex --workspace /absolute/path --session-id <id> 
 ```
 
 ## Packaged Helper Validation

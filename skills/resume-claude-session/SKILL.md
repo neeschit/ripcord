@@ -14,7 +14,7 @@ Use this playbook:
 
 2. Build the recovery command for the current workspace.
    Base command:
-   `python3 "<helper>" recover --source claude --workspace "$PWD" --json`
+   `python3 "<helper>" recover --source claude --workspace "$PWD"`
    If the user already supplied a specific Claude session id, append:
    `--session-id "<session-id>"`
 
