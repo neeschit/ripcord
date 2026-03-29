@@ -11,6 +11,9 @@ It is a recovery tool, not a native session handoff. Ripcord finds relevant loca
 - Recovers the initial prompt, recent user and assistant messages, recent tool use, and session metadata.
 - Stops after surfacing the recovered context so the user can decide whether to continue.
 
+<img width="1707" height="912" alt="claude surface" src="https://github.com/user-attachments/assets/4a329364-3c0b-4e55-8cd4-b1e3dc80b136" />
+
+
 ## What Ripcord Does Not Do
 
 - Restore provider-owned session state.
@@ -57,6 +60,8 @@ The recovered bundle is designed to be useful without pretending the original se
 ## Development
 
 Development workflow, testing, and local validation live in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Inspired by [ralPhD](https://github.com/angadhn/ralPhd)
 
 ## License
 
