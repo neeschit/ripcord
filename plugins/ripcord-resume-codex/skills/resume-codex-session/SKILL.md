@@ -1,12 +1,12 @@
 ---
 name: resume-codex-session
-description: Recover bounded context from a Codex session for the current workspace and stop after asking whether to continue. Use only when explicitly invoked to resume work from Codex artifacts.
+description: Recover bounded context from a Codex session (including Codex in the ChatGPT app) for the current workspace and stop after asking whether to continue. Use only when explicitly invoked to resume work from Codex artifacts.
 disable-model-invocation: true
 argument-hint: "[session-id]"
 allowed-tools: Bash, Read
 ---
 
-Recover context from a Codex session. This is a recovery workflow, not native session restoration.
+Recover context from a Codex session, including sessions started from Codex in the ChatGPT app (they are stored in `~/.codex` too). This is a recovery workflow, not native session restoration.
 
 Use this playbook:
 

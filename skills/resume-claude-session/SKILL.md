@@ -1,6 +1,6 @@
 ---
 name: resume-claude-session
-description: Recover bounded context from a Claude session for the current workspace and stop after asking whether to continue. Use when resuming work from Claude artifacts inside Codex.
+description: Recover bounded context from a Claude session for the current workspace and stop after asking whether to continue. Use when resuming work from Claude artifacts inside Codex, including Codex in the ChatGPT app.
 ---
 
 Recover context from a Claude session. This is a recovery workflow, not native session restoration.

@@ -21,6 +21,8 @@ No full transcript dumps. No automatic continuation. Just the context you need t
 
 Ripcord needs Python 3.14+. If [`uv`](https://docs.astral.sh/uv/) is installed, the helper uses it to fetch a matching Python automatically.
 
+"Codex" below includes Codex in the ChatGPT app: its sessions are stored in `~/.codex` alongside the CLI and IDE ones, so Ripcord recovers them the same way.
+
 After installing either integration, restart that app before using it. If you install both sides, restart both Claude Code and Codex once.
 
 ### Claude Code → Recovering Codex Context
@@ -38,7 +40,7 @@ Then:
 /resume-codex-session [session-id]
 ```
 
-### Codex → Recovering Claude Context
+### Codex (including the ChatGPT app) → Recovering Claude Context
 
 Paste this into Codex:
 
