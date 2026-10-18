@@ -1,20 +1,27 @@
-from __future__ import annotations
-
 import json
 import os
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .adapters import SessionDescriptor, iter_sessions
 from .homes import resolve_homes
-from .models import ArtifactRef, CandidateSession, TranscriptHints
-from .utils import truncate_text
+from .models import ArtifactRef, CandidateSession, SessionDescriptor, TranscriptEvent, TranscriptHints
+from .providers import get_provider
+from .utils import compact_preview, open_text, truncate_text
+from .workspace import WORKSPACE_MATCH_REASONS, WORKSPACE_MATCH_SCORES, WorkspaceMatcher
 
 
 MAX_RECENT_USER_MESSAGES = 5
 MAX_RECENT_ASSISTANT_MESSAGES = 5
+MAX_RECENT_REASONING = 5
 MAX_RECENT_TOOL_USES = 8
+INITIAL_PROMPT_TEXT_LIMIT = 4000
+MESSAGE_TEXT_LIMIT = 2000
+REASONING_TEXT_LIMIT = 1000
+SUMMARY_TEXT_LIMIT = 8000
+# Codex mirrors each message as a response_item and an event_msg a few lines apart.
+DUPLICATE_LINE_WINDOW = 20
 
 
 @dataclass(slots=True)
@@ -24,6 +31,59 @@ class RecoverySelection:
     warnings: list[str] = field(default_factory=list)
     candidates: list[CandidateSession] = field(default_factory=list)
     selected: CandidateSession | None = None
+
+
+@dataclass(slots=True)
+class TranscriptIndex:
+    line_count: int = 0
+    initial_user_prompt: dict[str, Any] | None = None
+    first_command_prompt: dict[str, Any] | None = None
+    first_user_message: dict[str, Any] | None = None
+    compaction_summary: dict[str, Any] | None = None
+    user_messages: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_RECENT_USER_MESSAGES))
+    assistant_messages: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_RECENT_ASSISTANT_MESSAGES))
+    reasoning: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_RECENT_REASONING))
+    tool_uses: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=MAX_RECENT_TOOL_USES))
+    user_message_count: int = 0
+    assistant_message_count: int = 0
+    reasoning_count: int = 0
+    tool_use_count: int = 0
+
+    def add(self, line_number: int, event: TranscriptEvent) -> None:
+        if event.kind == "user" and event.text:
+            entry = _message_entry(line_number, event.text, MESSAGE_TEXT_LIMIT)
+            if not _append_unique(self.user_messages, entry):
+                return
+            self.user_message_count += 1
+            self.first_user_message = self.first_user_message or entry
+            prompt = _message_entry(line_number, event.text, INITIAL_PROMPT_TEXT_LIMIT)
+            if event.is_command:
+                self.first_command_prompt = self.first_command_prompt or prompt
+            elif self.initial_user_prompt is None:
+                self.initial_user_prompt = prompt
+        elif event.kind == "assistant" and event.text:
+            if _append_unique(self.assistant_messages, _message_entry(line_number, event.text, MESSAGE_TEXT_LIMIT)):
+                self.assistant_message_count += 1
+        elif event.kind == "reasoning" and event.text:
+            if _append_unique(self.reasoning, _message_entry(line_number, event.text, REASONING_TEXT_LIMIT)):
+                self.reasoning_count += 1
+        elif event.kind == "summary" and event.text:
+            text, truncated = truncate_text(event.text, SUMMARY_TEXT_LIMIT)
+            self.compaction_summary = {"line": line_number, "text": text, "truncated": truncated}
+        elif event.kind == "tool_use" and event.name:
+            self.tool_use_count += 1
+            self.tool_uses.append(
+                {
+                    "line": line_number,
+                    "name": event.name,
+                    "arguments_preview": _compact_argument_preview(event.arguments),
+                    "call_id": event.call_id,
+                }
+            )
+
+    @property
+    def prompt(self) -> dict[str, Any] | None:
+        return self.initial_user_prompt or self.first_command_prompt
 
 
 class RipcordRecovery:
@@ -108,36 +168,28 @@ class RipcordRecovery:
         limit: int = 5,
     ) -> RecoverySelection:
         homes = resolve_homes(workspace_root)
-        warnings = list(homes.warnings)
         target_workspace = homes.workspace_root
         providers = self._resolve_provider_search_order(source_provider=source_provider, host_provider=host_provider)
 
+        warnings: list[str] = []
         descriptors: list[SessionDescriptor] = []
         for provider in providers:
-            home_status = getattr(homes, f"{provider}_home")
+            home_status = homes.homes[provider]
+            warnings.extend(home_status.warnings)
             if not home_status.valid:
-                warnings.extend(home_status.warnings)
                 continue
-            descriptors.extend(
-                list(
-                    iter_sessions(
-                        provider,
-                        Path(home_status.path),
-                        workspace_root=target_workspace,
-                        session_id=session_id,
-                    )
-                )
-            )
+            descriptors.extend(get_provider(provider).load_sessions(Path(home_status.path), session_id=session_id))
 
         preferred_source = providers[0] if providers else None
+        ranked = self._rank_descriptors(descriptors, preferred_source, WorkspaceMatcher(target_workspace))
         if session_id:
-            for descriptor in descriptors:
-                if descriptor.session_id == session_id:
+            for candidate in ranked:
+                if candidate.session_id == session_id:
                     return RecoverySelection(
                         status="ready",
                         workspace_root=target_workspace,
                         warnings=warnings,
-                        selected=descriptor.to_candidate(self._score_descriptor(descriptor, preferred_source)),
+                        selected=candidate,
                     )
             return RecoverySelection(
                 status="not_found",
@@ -145,7 +197,6 @@ class RipcordRecovery:
                 warnings=warnings + [f"session {session_id} was not found"],
             )
 
-        ranked = self._rank_descriptors(descriptors, preferred_source=preferred_source)
         if not ranked:
             return RecoverySelection(
                 status="not_found",
@@ -192,65 +243,29 @@ class RipcordRecovery:
             metadata["line_count"] = line_count if line_count is not None else self._count_file_lines(path)
         return metadata
 
-    def build_transcript_index(self, artifact_ref: ArtifactRef | None) -> dict[str, Any] | None:
+    def build_transcript_index(self, artifact_ref: ArtifactRef | None) -> TranscriptIndex | None:
         if artifact_ref is None or artifact_ref.kind != "transcript":
             return None
         path = Path(artifact_ref.path)
-        if not path.exists() or path.is_dir():
+        if not path.is_file():
             return None
 
-        transcript_index: dict[str, Any] = {
-            "line_count": 0,
-            "initial_user_prompt": None,
-            "user_messages": [],
-            "assistant_messages": [],
-            "tool_uses": [],
-        }
+        provider = get_provider(artifact_ref.provider)
+        transcript_index = TranscriptIndex()
         for line_number, record in self._iter_jsonl_records_with_lines(path):
-            transcript_index["line_count"] = line_number
-
-            user_body = self._extract_record_body(artifact_ref.provider, record, role="user")
-            if user_body:
-                user_entry = self._build_message_entry(line_number, user_body)
-                if self._append_unique_message(transcript_index["user_messages"], user_entry):
-                    if transcript_index["initial_user_prompt"] is None:
-                        text, truncated = truncate_text(user_body.strip(), 4000)
-                        transcript_index["initial_user_prompt"] = {
-                            "line": line_number,
-                            "preview": user_entry["preview"],
-                            "text": text,
-                            "truncated": truncated,
-                            "window": self._build_window(line_number, before=10, line_count=80, max_chars=8000),
-                        }
-
-            assistant_body = self._extract_record_body(artifact_ref.provider, record, role="assistant")
-            if assistant_body:
-                assistant_entry = self._build_message_entry(line_number, assistant_body)
-                self._append_unique_message(transcript_index["assistant_messages"], assistant_entry)
-
-            for tool_use in self._extract_tool_uses(artifact_ref.provider, record):
-                transcript_index["tool_uses"].append(
-                    {
-                        "line": line_number,
-                        "name": tool_use["name"],
-                        "arguments_preview": tool_use["arguments_preview"],
-                        "call_id": tool_use.get("call_id"),
-                        "window": self._build_window(line_number, before=8, line_count=40, max_chars=6000),
-                    }
-                )
-
+            transcript_index.line_count = line_number
+            for event in provider.parse_record(record):
+                transcript_index.add(line_number, event)
         return transcript_index
 
-    def build_transcript_hints(self, transcript_index: dict[str, Any] | None) -> TranscriptHints | None:
-        if transcript_index is None or transcript_index["line_count"] == 0:
+    def build_transcript_hints(self, transcript_index: TranscriptIndex | None) -> TranscriptHints | None:
+        if transcript_index is None or transcript_index.line_count == 0:
             return None
-        user_messages = transcript_index["user_messages"]
-        assistant_messages = transcript_index["assistant_messages"]
-        first_user = user_messages[0] if user_messages else None
-        last_user = user_messages[-1] if user_messages else None
-        last_assistant = assistant_messages[-1] if assistant_messages else None
+        first_user = transcript_index.first_user_message
+        last_user = transcript_index.user_messages[-1] if transcript_index.user_messages else None
+        last_assistant = transcript_index.assistant_messages[-1] if transcript_index.assistant_messages else None
         return TranscriptHints(
-            total_lines=transcript_index["line_count"],
+            total_lines=transcript_index.line_count,
             first_user_line=first_user["line"] if first_user else None,
             first_user_preview=first_user["preview"] if first_user else None,
             last_user_line=last_user["line"] if last_user else None,
@@ -260,26 +275,20 @@ class RipcordRecovery:
         )
 
     def _build_recovery_response(self, candidate: CandidateSession, warnings: list[str]) -> dict[str, Any]:
-        artifact_refs = list(candidate.artifact_refs)
-        primary = self.primary_artifact(artifact_refs)
-        transcript_index = self.build_transcript_index(primary)
+        primary = self.primary_artifact(list(candidate.artifact_refs))
+        transcript_index = self.build_transcript_index(primary) or TranscriptIndex()
         transcript_hints = self.build_transcript_hints(transcript_index)
         transcript_metadata = self.build_artifact_metadata(
             primary,
-            line_count=transcript_index["line_count"] if transcript_index is not None else None,
+            line_count=transcript_index.line_count or None,
         )
-        initial_user_prompt = transcript_index["initial_user_prompt"] if transcript_index is not None else None
-        user_messages = transcript_index["user_messages"] if transcript_index is not None else []
-        assistant_messages = transcript_index["assistant_messages"] if transcript_index is not None else []
-        tool_uses = transcript_index["tool_uses"] if transcript_index is not None else []
-        recent_user_messages = user_messages[-MAX_RECENT_USER_MESSAGES:]
-        recent_assistant_messages = assistant_messages[-MAX_RECENT_ASSISTANT_MESSAGES:]
-        recent_tool_uses = tool_uses[-MAX_RECENT_TOOL_USES:]
+        initial_user_prompt = transcript_index.prompt
         return {
             "status": "ready",
             "source_provider": candidate.provider,
             "session_id": candidate.session_id,
             "workspace_root": candidate.workspace_root,
+            "workspace_match": candidate.workspace_match,
             "updated_at": candidate.updated_at,
             "preview": candidate.preview,
             "reasons": list(candidate.reasons),
@@ -291,14 +300,16 @@ class RipcordRecovery:
             "transcript_metadata": transcript_metadata,
             "transcript_hints": transcript_hints.to_dict() if transcript_hints is not None else None,
             "initial_user_prompt": initial_user_prompt,
-            "recent_user_messages": recent_user_messages,
-            "recent_assistant_messages": recent_assistant_messages,
-            "recent_tool_uses": recent_tool_uses,
+            "compaction_summary": transcript_index.compaction_summary,
+            "recent_user_messages": list(transcript_index.user_messages),
+            "recent_assistant_messages": list(transcript_index.assistant_messages),
+            "recent_reasoning": list(transcript_index.reasoning),
+            "recent_tool_uses": list(transcript_index.tool_uses),
             "truncation": {
                 "initial_user_prompt": bool(initial_user_prompt and initial_user_prompt["truncated"]),
-                "recent_user_messages": len(user_messages) > len(recent_user_messages),
-                "recent_assistant_messages": len(assistant_messages) > len(recent_assistant_messages),
-                "recent_tool_uses": len(tool_uses) > len(recent_tool_uses),
+                "recent_user_messages": transcript_index.user_message_count > len(transcript_index.user_messages),
+                "recent_assistant_messages": transcript_index.assistant_message_count > len(transcript_index.assistant_messages),
+                "recent_tool_uses": transcript_index.tool_use_count > len(transcript_index.tool_uses),
             },
             "warnings": warnings + list(candidate.warnings),
         }
@@ -313,10 +324,8 @@ class RipcordRecovery:
             return ["codex", "claude"]
         return ["codex", "claude"]
 
-    def _score_descriptor(self, descriptor: SessionDescriptor, preferred_source: str | None) -> int:
-        score = 0
-        if descriptor.exact_workspace_match:
-            score += 1000
+    def _score_descriptor(self, descriptor: SessionDescriptor, preferred_source: str | None, workspace_match: str) -> int:
+        score = WORKSPACE_MATCH_SCORES[workspace_match]
         if descriptor.provider == preferred_source:
             score += 100
         score += descriptor.completeness_score
@@ -327,15 +336,22 @@ class RipcordRecovery:
             score += 10
         return score
 
-    def _rank_descriptors(self, descriptors: list[SessionDescriptor], preferred_source: str | None) -> list[CandidateSession]:
-        ranked: list[tuple[int, SessionDescriptor]] = []
+    def _rank_descriptors(
+        self,
+        descriptors: list[SessionDescriptor],
+        preferred_source: str | None,
+        matcher: WorkspaceMatcher,
+    ) -> list[CandidateSession]:
+        candidates: list[CandidateSession] = []
         for descriptor in descriptors:
-            ranked.append((self._score_descriptor(descriptor, preferred_source), descriptor))
-        ranked.sort(key=lambda item: (item[0], item[1].updated_at), reverse=True)
-        return [descriptor.to_candidate(score) for score, descriptor in ranked]
+            workspace_match = matcher.relation(descriptor.workspace_root)
+            score = self._score_descriptor(descriptor, preferred_source, workspace_match)
+            candidates.append(descriptor.to_candidate(score, workspace_match, WORKSPACE_MATCH_REASONS[workspace_match]))
+        candidates.sort(key=lambda candidate: (candidate.score, candidate.updated_at), reverse=True)
+        return candidates
 
     def _iter_jsonl_records_with_lines(self, path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        with open_text(path) as handle:
             for line_number, raw_line in enumerate(handle, start=1):
                 line = raw_line.strip()
                 if not line:
@@ -347,139 +363,29 @@ class RipcordRecovery:
                 if isinstance(value, dict):
                     yield line_number, value
 
-    def _extract_record_body(self, provider: str, record: dict[str, Any], role: str) -> str | None:
-        if provider == "codex":
-            return self._extract_codex_record_body(record, role)
-        if provider == "claude":
-            return self._extract_claude_record_body(record, role)
-        return None
-
-    def _extract_codex_record_body(self, record: dict[str, Any], role: str) -> str | None:
-        record_type = record.get("type")
-        payload = record.get("payload")
-        if not isinstance(payload, dict):
-            return None
-        if record_type == "response_item" and payload.get("type") == "message" and payload.get("role") == role:
-            return self._flatten_message_text(payload.get("content"))
-        if role == "user" and record_type == "event_msg" and payload.get("type") == "user_message":
-            return self._flatten_message_text(payload.get("message"))
-        if role == "assistant" and record_type == "event_msg" and payload.get("type") == "agent_message":
-            return self._flatten_message_text(payload.get("message"))
-        return None
-
-    def _extract_claude_record_body(self, record: dict[str, Any], role: str) -> str | None:
-        if record.get("type") != role:
-            return None
-        return self._flatten_message_text(record.get("message"))
-
-    def _extract_tool_uses(self, provider: str, record: dict[str, Any]) -> list[dict[str, str | None]]:
-        if provider == "codex":
-            tool_use = self._extract_codex_tool_use(record)
-            return [tool_use] if tool_use is not None else []
-        if provider == "claude":
-            return self._extract_claude_tool_uses(record)
-        return []
-
-    def _extract_codex_tool_use(self, record: dict[str, Any]) -> dict[str, str | None] | None:
-        if record.get("type") != "response_item":
-            return None
-        payload = record.get("payload")
-        if not isinstance(payload, dict) or payload.get("type") != "function_call":
-            return None
-        name = payload.get("name")
-        if not isinstance(name, str) or not name:
-            return None
-        return {
-            "name": name,
-            "arguments_preview": self._compact_argument_preview(payload.get("arguments")),
-            "call_id": payload.get("call_id") if isinstance(payload.get("call_id"), str) else None,
-        }
-
-    def _extract_claude_tool_uses(self, record: dict[str, Any]) -> list[dict[str, str | None]]:
-        return self._find_tool_use_blocks(record.get("message"))
-
-    def _find_tool_use_blocks(self, value: Any) -> list[dict[str, str | None]]:
-        results: list[dict[str, str | None]] = []
-        if isinstance(value, list):
-            for item in value:
-                results.extend(self._find_tool_use_blocks(item))
-            return results
-        if isinstance(value, dict):
-            block_type = value.get("type")
-            name = value.get("name") or value.get("tool_name")
-            if block_type in {"tool_use", "tool"} and isinstance(name, str) and name:
-                results.append(
-                    {
-                        "name": name,
-                        "arguments_preview": self._compact_argument_preview(
-                            value.get("input") or value.get("arguments") or value.get("parameters")
-                        ),
-                        "call_id": value.get("id") if isinstance(value.get("id"), str) else None,
-                    }
-                )
-            for nested in value.values():
-                results.extend(self._find_tool_use_blocks(nested))
-        return results
-
-    def _build_message_entry(self, line_number: int, text: str) -> dict[str, Any]:
-        return {
-            "line": line_number,
-            "preview": self._compact_preview(text) or "",
-            "window": self._build_window(line_number, before=10, line_count=60, max_chars=6000),
-        }
-
-    def _build_window(self, line_number: int, before: int, line_count: int, max_chars: int) -> dict[str, int | str]:
-        return {
-            "mode": "window",
-            "line_start": max(line_number - before, 1),
-            "line_count": line_count,
-            "max_chars": max_chars,
-        }
-
-    def _append_unique_message(self, entries: list[dict[str, Any]], entry: dict[str, Any]) -> bool:
-        if entries and entries[-1]["preview"] == entry["preview"] and entry["line"] - entries[-1]["line"] <= 2:
-            return False
-        entries.append(entry)
-        return True
-
-    def _compact_argument_preview(self, value: Any) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            compact = " ".join(value.split())
-        else:
-            compact = json.dumps(value, sort_keys=True, ensure_ascii=True)
-        preview, _ = truncate_text(compact, 240)
-        return preview
-
-    def _flatten_message_text(self, value: Any) -> str | None:
-        if isinstance(value, str):
-            return value.strip() or None
-        if isinstance(value, list):
-            parts: list[str] = []
-            for item in value:
-                text = self._flatten_message_text(item)
-                if text:
-                    parts.append(text)
-            return "\n".join(parts).strip() or None
-        if isinstance(value, dict):
-            direct_text = value.get("text")
-            if isinstance(direct_text, str) and direct_text.strip():
-                return direct_text.strip()
-            for key in ("content", "message"):
-                nested = value.get(key)
-                text = self._flatten_message_text(nested)
-                if text:
-                    return text
-        return None
-
-    def _compact_preview(self, text: str | None) -> str | None:
-        if not text:
-            return None
-        preview = " ".join(text.split())
-        preview, _ = truncate_text(preview, 160)
-        return preview
-
     def _count_file_lines(self, path: Path) -> int:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        with open_text(path) as handle:
             return sum(1 for _ in handle)
+
+
+def _message_entry(line_number: int, text: str, limit: int) -> dict[str, Any]:
+    bounded, truncated = truncate_text(text, limit)
+    return {"line": line_number, "preview": compact_preview(text), "text": bounded, "truncated": truncated}
+
+
+def _append_unique(entries: deque[dict[str, Any]], entry: dict[str, Any]) -> bool:
+    if entries and entries[-1]["text"] == entry["text"] and entry["line"] - entries[-1]["line"] <= DUPLICATE_LINE_WINDOW:
+        return False
+    entries.append(entry)
+    return True
+
+
+def _compact_argument_preview(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        compact = " ".join(value.split())
+    else:
+        compact = json.dumps(value, sort_keys=True, ensure_ascii=True)
+    preview, _ = truncate_text(compact, 240)
+    return preview

@@ -1,12 +1,4 @@
-from __future__ import annotations
-
 import json
-import os
-import sqlite3
-import subprocess
-import sys
-from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -14,48 +6,8 @@ from ripcord.recovery import (
     MAX_RECENT_ASSISTANT_MESSAGES,
     MAX_RECENT_TOOL_USES,
     MAX_RECENT_USER_MESSAGES,
-    RipcordRecovery,
 )
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-@dataclass(slots=True)
-class RecoveryTestEnv:
-    root: Path
-    workspace: Path
-    codex_home: Path
-    claude_home: Path
-    recovery: RipcordRecovery
-
-
-@pytest.fixture
-def recovery_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RecoveryTestEnv:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    codex_home = tmp_path / ".codex"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
-    (codex_home / "sessions").mkdir()
-    (codex_home / "session_index.jsonl").write_text("", encoding="utf-8")
-
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    (claude_home / "projects").mkdir()
-
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CLAUDE_HOME", str(claude_home))
-    monkeypatch.setenv("RIPCORD_HOME", str(tmp_path / ".ripcord"))
-
-    return RecoveryTestEnv(
-        root=tmp_path,
-        workspace=workspace,
-        codex_home=codex_home,
-        claude_home=claude_home,
-        recovery=RipcordRecovery(),
-    )
+from support import RecoveryTestEnv, create_claude_session, create_codex_session
 
 
 def test_codex_recover_returns_bounded_contract(recovery_env: RecoveryTestEnv) -> None:
@@ -246,173 +198,19 @@ def test_recover_returns_not_found_for_missing_session(recovery_env: RecoveryTes
     assert result["warnings"] == ["session missing-session was not found"]
 
 
-@pytest.mark.parametrize(
-    ("helper_path", "source_provider", "session_id"),
-    [
-        ("plugins/ripcord-resume-codex/helpers/ripcord_helper.py", "codex", "codex-helper"),
-        ("skills/resume-claude-session/runtime/ripcord_helper.py", "claude", "claude-helper"),
-    ],
-)
-def test_packaged_helpers_can_recover_context(
-    recovery_env: RecoveryTestEnv,
-    helper_path: str,
-    source_provider: str,
-    session_id: str,
-) -> None:
-    if source_provider == "codex":
-        create_codex_session(recovery_env, session_id=session_id, updated_epoch=200)
-    else:
-        create_claude_session(recovery_env, session_id=session_id, updated_at="2026-03-29T12:00:00Z")
+def test_warnings_only_cover_the_searched_provider(recovery_env: RecoveryTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_HOME", str(recovery_env.root / "missing-claude"))
+    create_codex_session(recovery_env, session_id="codex-1", updated_epoch=100)
 
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / helper_path),
-            "recover",
-            "--source",
-            source_provider,
-            "--workspace",
-            str(recovery_env.workspace),
-            "--session-id",
-            session_id,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-        env=os.environ.copy(),
-    )
+    result = recovery_env.recovery.recover(str(recovery_env.workspace), source_provider="codex", session_id="codex-1")
 
-    payload = json.loads(completed.stdout)
-    assert payload["status"] == "ready"
-    assert payload["session_id"] == session_id
+    assert result["warnings"] == []
 
 
-def create_codex_session(
-    recovery_env: RecoveryTestEnv,
-    session_id: str,
-    updated_epoch: int,
-    transcript_records: list[dict[str, object]] | None = None,
-) -> Path:
-    transcript_dir = recovery_env.codex_home / "sessions" / "2026" / "03" / "29"
-    transcript_dir.mkdir(parents=True, exist_ok=True)
-    transcript_path = transcript_dir / f"rollout-2026-03-29T10-00-00-{session_id}.jsonl"
-    records = transcript_records or [
-        {"type": "session_meta", "payload": {"id": session_id, "cwd": str(recovery_env.workspace)}},
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
-            },
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "working"}],
-            },
-        },
-    ]
-    transcript_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
-    (recovery_env.codex_home / "session_index.jsonl").write_text(
-        json.dumps({"id": session_id, "thread_name": "test"}) + "\n",
-        encoding="utf-8",
-    )
-    write_codex_sqlite_row(recovery_env, session_id, transcript_path, updated_epoch)
-    return transcript_path
+def test_invalid_home_is_reported_once(recovery_env: RecoveryTestEnv, monkeypatch: pytest.MonkeyPatch) -> None:
+    missing_home = recovery_env.root / "missing-codex"
+    monkeypatch.setenv("CODEX_HOME", str(missing_home))
 
+    result = recovery_env.recovery.recover(str(recovery_env.workspace), source_provider="codex")
 
-def write_codex_sqlite_row(
-    recovery_env: RecoveryTestEnv,
-    session_id: str,
-    transcript_path: Path,
-    updated_epoch: int,
-) -> None:
-    db_path = recovery_env.codex_home / "state_1.sqlite"
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            create table if not exists threads (
-                id text primary key,
-                rollout_path text not null,
-                created_at integer not null,
-                updated_at integer not null,
-                source text not null,
-                model_provider text not null,
-                cwd text not null,
-                title text not null,
-                sandbox_policy text not null,
-                approval_mode text not null,
-                tokens_used integer not null default 0,
-                has_user_event integer not null default 0,
-                archived integer not null default 0,
-                archived_at integer,
-                git_sha text,
-                git_branch text,
-                git_origin_url text,
-                cli_version text not null default '',
-                first_user_message text not null default '',
-                agent_nickname text,
-                agent_role text,
-                memory_mode text not null default 'enabled',
-                model text,
-                reasoning_effort text,
-                agent_path text
-            )
-            """
-        )
-        connection.execute(
-            """
-            insert or replace into threads (
-                id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
-                sandbox_policy, approval_mode, git_sha, git_branch, cli_version, first_user_message
-            ) values (?, ?, ?, ?, 'vscode', 'openai', ?, 'Thread', 'workspace-write', 'default', 'abc123', 'main', '0.1', 'hello')
-            """,
-            (session_id, str(transcript_path), updated_epoch, updated_epoch, str(recovery_env.workspace)),
-        )
-
-
-def create_claude_session(
-    recovery_env: RecoveryTestEnv,
-    session_id: str,
-    updated_at: str,
-    transcript_records: list[dict[str, object]] | None = None,
-) -> Path:
-    project_dir = recovery_env.claude_home / "projects" / recovery_env.workspace.as_posix().replace("/", "-")
-    project_dir.mkdir(parents=True, exist_ok=True)
-    transcript_path = project_dir / f"{session_id}.jsonl"
-    records = transcript_records or [
-        {
-            "type": "system",
-            "timestamp": updated_at,
-            "cwd": str(recovery_env.workspace),
-            "sessionId": session_id,
-            "gitBranch": "main",
-        },
-        {
-            "type": "user",
-            "timestamp": updated_at,
-            "cwd": str(recovery_env.workspace),
-            "sessionId": session_id,
-            "message": {"content": "resume this work"},
-            "gitBranch": "main",
-        },
-    ]
-    transcript_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
-
-    session_dir = project_dir / session_id / "subagents"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "agent-1.jsonl").write_text("{}", encoding="utf-8")
-
-    metadata_dir = recovery_env.claude_home / "usage-data" / "session-meta"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / f"{session_id}.json").write_text(
-        json.dumps({"session_id": session_id, "project_path": str(recovery_env.workspace), "start_time": updated_at}),
-        encoding="utf-8",
-    )
-
-    (recovery_env.claude_home / "file-history" / session_id).mkdir(parents=True, exist_ok=True)
-    return transcript_path
+    assert result["warnings"] == [f"{missing_home} does not exist", "no matching sessions found"]

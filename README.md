@@ -9,8 +9,8 @@ Ripcord pulls the parachute. It recovers bounded context from your previous sess
 
 ## How It Works
 
-1. Detects sessions from the other tool in your current workspace.
-2. Extracts a compact recovery bundle — initial prompt, recent messages, tool use, and metadata.
+1. Detects sessions from the other tool in your current workspace, including other worktrees and subdirectories of the same repository.
+2. Extracts a compact recovery bundle that keeps the decision trail — initial prompt, recent messages, reasoning, compaction summaries, tool use, and metadata.
 3. Surfaces the recovered context and lets you decide what to do next.
 
 <img width="1707" height="912" alt="claude surface" src="https://github.com/user-attachments/assets/4a329364-3c0b-4e55-8cd4-b1e3dc80b136" />
@@ -18,6 +18,10 @@ Ripcord pulls the parachute. It recovers bounded context from your previous sess
 No full transcript dumps. No automatic continuation. Just the context you need to keep moving.
 
 ## Quick Start
+
+Ripcord needs Python 3.14+. If [`uv`](https://docs.astral.sh/uv/) is installed, the helper uses it to fetch a matching Python automatically.
+
+"Codex" below includes Codex in the ChatGPT app: its sessions are stored in `~/.codex` alongside the CLI and IDE ones, so Ripcord recovers them the same way.
 
 After installing either integration, restart that app before using it. If you install both sides, restart both Claude Code and Codex once.
 
@@ -36,7 +40,7 @@ Then:
 /resume-codex-session [session-id]
 ```
 
-### Codex → Recovering Claude Context
+### Codex (including the ChatGPT app) → Recovering Claude Context
 
 Paste this into Codex:
 
