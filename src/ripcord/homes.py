@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 import os
 from pathlib import Path
 
 from .models import HomeStatus, HomesReport
+from .providers import PROVIDERS
 from .utils import canonicalize_path, expand_path
 
 
@@ -37,28 +36,18 @@ def _validate_home(path: Path, required_markers: list[str], optional_markers: li
 
 
 def resolve_homes(workspace_root: str | None = None) -> HomesReport:
-    ripcord_home = expand_path(os.environ.get("RIPCORD_HOME", "~/.ripcord"))
-    codex_home = expand_path(os.environ.get("CODEX_HOME", "~/.codex"))
-    claude_home = expand_path(os.environ.get("CLAUDE_HOME", "~/.claude"))
     workspace = expand_path(workspace_root or os.getcwd())
-
-    codex_status = _validate_home(
-        codex_home,
-        required_markers=["auth.json", "session_index.jsonl", "sessions"],
-        optional_markers=["shell_snapshots", "state_5.sqlite", "state_*.sqlite"],
-    )
-    claude_status = _validate_home(
-        claude_home,
-        required_markers=["projects"],
-        optional_markers=["usage-data/session-meta", "file-history", "shell-snapshots"],
-    )
-
-    warnings = list(codex_status.warnings) + list(claude_status.warnings)
+    homes = {
+        name: _validate_home(
+            expand_path(os.environ.get(provider.home_env, provider.default_home)),
+            required_markers=provider.required_markers,
+            optional_markers=provider.optional_markers,
+        )
+        for name, provider in PROVIDERS.items()
+    }
 
     return HomesReport(
-        ripcord_home=canonicalize_path(ripcord_home) or str(ripcord_home),
-        codex_home=codex_status,
-        claude_home=claude_status,
+        homes=homes,
         workspace_root=canonicalize_path(workspace) or str(workspace),
-        warnings=warnings,
+        warnings=[warning for status in homes.values() for warning in status.warnings],
     )
